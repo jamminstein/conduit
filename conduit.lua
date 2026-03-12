@@ -874,5 +874,11 @@ function init()
 end
 
 function cleanup()
-  -- nothing to clean up
+  clock.cancel_all()
+  if m then
+    for ch = 1, 16 do
+      m:cc(123, 0, ch)
+      m:cc(120, 0, ch)
+    end
+  end
 end
