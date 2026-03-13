@@ -60,6 +60,11 @@ end
 local macros = {0.0, 0.0, 0.0, 0.0}
 local MACRO_NAMES = {"TEXTURE", "MOTION", "SPACE", "DENSITY"}
 
+-- macro recording system
+local macro_recording = {}
+local is_recording = false
+local recording_start_time = 0
+
 -- keyboard state
 local held_notes = {}
 local root_note = 48  -- C3
@@ -72,6 +77,19 @@ local playing = false
 
 -- screen redraw flag
 local dirty = true
+
+-- grid modulation matrix: rows 5-8 (destinations), cols 1-4 (sources)
+-- grid_mod_matrix[row - 4][col] = true if connection active
+local grid_mod_matrix = {}
+for row = 1, 4 do
+  grid_mod_matrix[row] = {}
+  for col = 1, 4 do
+    grid_mod_matrix[row][col] = false
+  end
+end
+
+local MOD_SOURCES = {"LFO1", "LFO2", "ENV", "Random"}  -- cols 1-4
+local MOD_DESTS = {"OSC A freq", "OSC B freq", "Filter cutoff", "Fold amount"}  -- rows 5-8
 
 -- ── TEMPLATES ────────────────────────────────────────────
 -- each template is a curated starting point that sounds
@@ -349,6 +367,31 @@ local function apply_macro(idx, val)
   dirty = true
 end
 
+-- ── MACRO RECORDING ──────────────────────────────────────
+
+local function start_macro_recording()
+  is_recording = true
+  recording_start_time = clock.get_beats()
+  macro_recording = {}
+  dirty = true
+end
+
+local function stop_macro_recording()
+  is_recording = false
+  dirty = true
+end
+
+local function playback_macro_recording()
+  if #macro_recording == 0 then return end
+  clock.run(function()
+    for i, event in ipairs(macro_recording) do
+      local wait_time = event.time - (macro_recording[i-1] and macro_recording[i-1].time or recording_start_time)
+      clock.sleep(wait_time)
+      apply_macro(event.macro, event.value)
+    end
+  end)
+end
+
 -- ── TEMPLATE LOADING ─────────────────────────────────────
 
 local function load_template(idx)
@@ -391,6 +434,7 @@ end
 -- ── GRID ─────────────────────────────────────────────────
 -- Layout (16×8):
 --   cols 1-5, rows 1-5:  routing matrix
+--   cols 1-4, rows 5-8:  modulation matrix
 --   cols 1-5, row 7:     module focus selector
 --   cols 1-8, row 8:     template selector
 --   cols 9-16, rows 1-8: isomorphic keyboard
@@ -409,6 +453,17 @@ local function grid_redraw()
   -- ── Row 6: visual separator ──
   for x = 1, 5 do
     g:led(x, 6, B.GHOST)
+  end
+
+  -- ── Modulation matrix (cols 1-4, rows 5-8) ──
+  -- Sources on cols 1-4: LFO1, LFO2, ENV, Random
+  -- Destinations on rows 5-8: OSC A, OSC B, Filter, Fold
+  for col = 1, 4 do
+    for row = 5, 8 do
+      local dest_idx = row - 4
+      local is_active = grid_mod_matrix[dest_idx][col]
+      g:led(col, row, is_active and B.BRIGHT or B.DIM)
+    end
   end
 
   -- ── Module selector (row 7, cols 1-5) ──
@@ -447,8 +502,17 @@ local function grid_redraw()
 end
 
 g.key = function(x, y, z)
+  -- ── Modulation matrix (cols 1-4, rows 5-8) ──
+  if x >= 1 and x <= 4 and y >= 5 and y <= 8 then
+    if z == 1 then
+      local col = x
+      local dest_idx = y - 4
+      grid_mod_matrix[dest_idx][col] = not grid_mod_matrix[dest_idx][col]
+      dirty = true
+    end
+
   -- ── Routing matrix ──
-  if x >= 1 and x <= 5 and y >= 1 and y <= 5 then
+  elseif x >= 1 and x <= 5 and y >= 1 and y <= 5 then
     if z == 1 then
       local src, dst = y, x
       local lvl = route_matrix[src][dst]
@@ -636,6 +700,13 @@ local function draw_macro_page()
     draw_bar(2, y_pos + 3, 124, macros[idx], 1.0)
   end
 
+  -- recording status
+  if is_recording then
+    screen.level(15)
+    screen.move(64, 48)
+    screen.text_center("REC")
+  end
+
   -- encoder hints
   screen.level(3)
   screen.move(2, 62)
@@ -693,6 +764,14 @@ function enc(n, d)
     -- macros
     local idx = (macro_pair - 1) * 2 + (n - 1)  -- E2 → macro 1or3, E3 → macro 2or4
     if idx >= 1 and idx <= 4 then
+      if is_recording then
+        -- while recording, capture macro changes
+        table.insert(macro_recording, {
+          time = clock.get_beats(),
+          macro = idx,
+          value = macros[idx] + d * 0.01
+        })
+      end
       apply_macro(idx, macros[idx] + d * 0.01)
     end
   end
@@ -720,9 +799,13 @@ function key(n, z)
     end
 
   elseif page == 3 then
-    -- K2/K3 switch macro pair
+    -- K2+K3: start/stop macro recording
     if n == 2 or n == 3 then
-      macro_pair = macro_pair == 1 and 2 or 1
+      if is_recording then
+        stop_macro_recording()
+      else
+        start_macro_recording()
+      end
     end
   end
 
