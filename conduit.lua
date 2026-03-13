@@ -78,6 +78,13 @@ local playing = false
 -- screen redraw flag
 local dirty = true
 
+-- screen design system state
+local beat_phase = 0.0      -- 0.0 to 1.0, pulses at beat rate
+local popup_param = nil     -- transient parameter name
+local popup_val = nil       -- transient parameter value
+local popup_time = 0        -- time remaining for popup display
+local midi_activity_time = 0 -- time remaining for MIDI activity flash
+
 -- grid modulation matrix: rows 5-8 (destinations), cols 1-4 (sources)
 -- grid_mod_matrix[row - 4][col] = true if connection active
 local grid_mod_matrix = {}
@@ -312,6 +319,7 @@ local function note_on(note, vel)
   engine.note_on(freq, vel or 100)
   current_note = note
   playing = true
+  midi_activity_time = 0.2
   dirty = true
 end
 
@@ -565,159 +573,48 @@ end
 
 -- ── SCREEN ───────────────────────────────────────────────
 
-local function draw_header(title)
-  screen.level(15)
-  screen.move(1, 8)
-  screen.text("CONDUIT")
+local function pulse_brightness()
+  -- beat_phase 0.0-1.0, returns brightness 3-15
+  local t = beat_phase
+  if t < 0.5 then
+    return 3 + t * 24
+  else
+    return 15 - (t - 0.5) * 24
+  end
+end
+
+local function draw_status_strip()
+  -- y 0-8: "CONDUIT" at level 4, page dots at level 12/3, beat pulse at x=124
   screen.level(4)
-  screen.move(128, 8)
-  screen.text_right(title)
+  screen.move(2, 7)
+  screen.text("CONDUIT")
+
+  -- page indicator dots: ROUTE / MODULE / MACRO
+  for i = 1, 3 do
+    screen.level(i == page and 12 or 3)
+    screen.circle(58 + (i - 1) * 6, 4, 1)
+    screen.fill()
+  end
+
+  -- template name at level 6
+  screen.level(6)
+  screen.move(65, 7)
+  screen.text_center(templates[selected_template].name)
+
+  -- beat pulse dot at x=124
+  local pulse_level = math.floor(pulse_brightness())
+  screen.level(pulse_level)
+  screen.circle(124, 4, 1)
+  screen.fill()
+
+  -- separator line
   screen.level(2)
-  screen.move(1, 11)
-  screen.line(128, 11)
+  screen.move(0, 9)
+  screen.line(128, 9)
   screen.stroke()
 end
 
-local function draw_bar(x, y, w, val, max_val)
-  -- background
-  screen.level(2)
-  screen.rect(x, y, w, 5)
-  screen.fill()
-  -- filled portion
-  screen.level(12)
-  local fill = util.clamp(val / max_val, 0, 1) * w
-  screen.rect(x, y, fill, 5)
-  screen.fill()
-end
-
-local function draw_route_page()
-  draw_header("ROUTE")
-
-  -- draw matrix labels
-  screen.level(6)
-  local ox, oy = 8, 17
-  local cell = 10
-
-  -- column labels (destinations)
-  for i = 1, 5 do
-    screen.move(ox + (i - 1) * cell + cell / 2, oy - 2)
-    screen.text_center(MODULE_SHORT[i])
-  end
-
-  -- rows
-  for src = 1, 5 do
-    -- row label
-    screen.level(6)
-    screen.move(ox + 5 * cell + 4, oy + (src - 1) * cell + cell / 2 + 2)
-    screen.text(MODULE_SHORT[src])
-
-    for dst = 1, 5 do
-      local lvl = route_matrix[src][dst]
-      local cx = ox + (dst - 1) * cell + cell / 2
-      local cy = oy + (src - 1) * cell + cell / 2
-
-      if lvl == 1 then
-        -- empty: just a dot
-        screen.level(2)
-        screen.pixel(cx, cy)
-        screen.fill()
-      else
-        -- filled circle, size by amount
-        local r = lvl  -- 2, 3, or 4
-        screen.level(lvl * 4)
-        screen.circle(cx, cy, r)
-        screen.fill()
-      end
-    end
-  end
-
-  -- current note display
-  if current_note then
-    screen.level(15)
-    screen.move(100, 62)
-    screen.text_center(musicutil.note_num_to_name(current_note, true))
-  end
-end
-
-local function draw_module_page()
-  draw_header(MODULE_NAMES[selected_module])
-
-  local mp = module_params[selected_module]
-
-  for i = 1, 2 do
-    local p = mp[i]
-    local val = params:get(p.key)
-    local y_pos = 20 + (i - 1) * 22
-
-    -- param name
-    screen.level(8)
-    screen.move(2, y_pos)
-    screen.text(p.name)
-
-    -- value
-    screen.level(15)
-    screen.move(126, y_pos)
-    screen.text_right(string.format(p.fmt, val))
-
-    -- bar
-    local bar_max = p.max
-    local bar_val = val
-    if p.exp then
-      bar_val = math.log(val) / math.log(bar_max)
-      bar_max = 1
-    end
-    draw_bar(2, y_pos + 3, 124, bar_val, bar_max)
-  end
-
-  -- encoder hints
-  screen.level(3)
-  screen.move(2, 62)
-  screen.text("E2: " .. mp[1].name)
-  screen.move(126, 62)
-  screen.text_right("E3: " .. mp[2].name)
-end
-
-local function draw_macro_page()
-  draw_header("MACROS")
-
-  local start_idx = (macro_pair - 1) * 2 + 1
-
-  for i = 0, 1 do
-    local idx = start_idx + i
-    local y_pos = 20 + i * 22
-
-    -- macro name
-    screen.level(8)
-    screen.move(2, y_pos)
-    screen.text(MACRO_NAMES[idx])
-
-    -- value
-    screen.level(15)
-    screen.move(126, y_pos)
-    screen.text_right(string.format("%.0f%%", macros[idx] * 100))
-
-    -- bar
-    draw_bar(2, y_pos + 3, 124, macros[idx], 1.0)
-  end
-
-  -- recording status
-  if is_recording then
-    screen.level(15)
-    screen.move(64, 48)
-    screen.text_center("REC")
-  end
-
-  -- encoder hints
-  screen.level(3)
-  screen.move(2, 62)
-  screen.text("E2: " .. MACRO_NAMES[start_idx])
-  screen.move(126, 62)
-  screen.text_right("E3: " .. MACRO_NAMES[start_idx + 1])
-end
-
-function redraw()
-  screen.clear()
-
+local function draw_live_zone()
   if page == 1 then
     draw_route_page()
   elseif page == 2 then
@@ -725,13 +622,191 @@ function redraw()
   elseif page == 3 then
     draw_macro_page()
   end
+end
 
-  -- page indicator dots
-  for i = 1, 3 do
-    screen.level(i == page and 15 or 3)
-    screen.circle(58 + (i - 1) * 6, 62, 1)
+local function draw_context_bar()
+  -- y 53-58: template name (level 5), MIDI channel (level 4), active note count (level 6)
+  screen.level(2)
+  screen.move(0, 52)
+  screen.line(128, 52)
+  screen.stroke()
+
+  screen.level(5)
+  screen.move(2, 58)
+  screen.text(templates[selected_template].name)
+
+  screen.level(4)
+  screen.move(65, 58)
+  screen.text_center("CH: 1")
+
+  if playing then
+    screen.level(6)
+    screen.move(126, 58)
+    screen.text_right(musicutil.note_num_to_name(current_note, true))
+  end
+end
+
+local function draw_midi_activity()
+  -- small dot near context bar that flashes level 12 when notes pass through
+  if midi_activity_time > 0 then
+    screen.level(12)
+    screen.circle(115, 54, 1)
     screen.fill()
   end
+end
+
+local function draw_route_page()
+  -- ROUTE: sources on left (level 5), destinations on top (level 5)
+  -- Active connections as bright points (level 12-15)
+  -- Inactive intersections at level 2
+  -- Selected connection at level 15
+  
+  local ox, oy = 12, 15
+  local cell = 9
+
+  -- column labels (destinations) at level 5
+  screen.level(5)
+  for i = 1, 5 do
+    screen.move(ox + (i - 1) * cell + cell / 2, oy - 4)
+    screen.text_center(MODULE_SHORT[i])
+  end
+
+  -- matrix
+  for src = 1, 5 do
+    -- row label (source) at level 5
+    screen.level(5)
+    screen.move(ox - 4, oy + (src - 1) * cell + cell / 2 + 2)
+    screen.text_right(MODULE_SHORT[src])
+
+    for dst = 1, 5 do
+      local lvl = route_matrix[src][dst]
+      local cx = ox + (dst - 1) * cell + cell / 2
+      local cy = oy + (src - 1) * cell + cell / 2
+
+      if lvl == 1 then
+        -- inactive at level 2
+        screen.level(2)
+        screen.pixel(cx, cy)
+        screen.fill()
+      else
+        -- active: brightness based on level
+        screen.level(9 + lvl * 2)
+        screen.circle(cx, cy, lvl - 0.5)
+        screen.fill()
+      end
+    end
+  end
+end
+
+local function draw_module_page()
+  -- MODULE: parameter bars. Selected param at level 15, others at level 8. Labels at level 5.
+  local mp = module_params[selected_module]
+
+  -- module name header
+  screen.level(12)
+  screen.move(65, 18)
+  screen.text_center(MODULE_NAMES[selected_module])
+
+  for i = 1, 2 do
+    local p = mp[i]
+    local val = params:get(p.key)
+    local y_pos = 28 + (i - 1) * 16
+
+    -- param name at level 5
+    screen.level(5)
+    screen.move(2, y_pos - 2)
+    screen.text(p.name)
+
+    -- value at level 15
+    screen.level(15)
+    screen.move(126, y_pos - 2)
+    screen.text_right(string.format(p.fmt, val))
+
+    -- horizontal bar
+    local bar_max = p.max
+    local bar_val = val
+    if p.exp then
+      bar_val = math.log(val) / math.log(bar_max)
+      bar_max = 1
+    end
+    
+    -- bar background at level 2
+    screen.level(2)
+    screen.rect(2, y_pos + 1, 124, 4)
+    screen.fill()
+    
+    -- bar fill at level 8
+    screen.level(8)
+    local fill = util.clamp(bar_val / bar_max, 0, 1) * 124
+    screen.rect(2, y_pos + 1, fill, 4)
+    screen.fill()
+  end
+end
+
+local function draw_macro_page()
+  -- MACRO: fader positions as vertical bars. Active at level 15, others at level 8.
+  -- If recording active, show "REC" pulsing at level 12.
+  local start_idx = (macro_pair - 1) * 2 + 1
+
+  -- title
+  screen.level(12)
+  screen.move(65, 18)
+  screen.text_center("MACROS")
+
+  for i = 0, 1 do
+    local idx = start_idx + i
+    local x_pos = 20 + i * 50
+
+    -- macro name at level 5
+    screen.level(5)
+    screen.move(x_pos, 28)
+    screen.text_center(MACRO_NAMES[idx])
+
+    -- value at level 15
+    screen.level(15)
+    screen.move(x_pos, 37)
+    screen.text_center(string.format("%.0f%%", macros[idx] * 100))
+
+    -- vertical bar background at level 2
+    screen.level(2)
+    screen.rect(x_pos - 3, 42, 6, 8)
+    screen.fill()
+
+    -- vertical bar fill at level 8 or 15
+    screen.level(8)
+    local fill_height = macros[idx] * 8
+    screen.rect(x_pos - 3, 42 + (8 - fill_height), 6, fill_height)
+    screen.fill()
+  end
+
+  -- recording status at level 12 pulsing
+  if is_recording then
+    screen.level(math.floor(pulse_brightness()))
+    screen.move(65, 45)
+    screen.text_center("REC")
+  end
+end
+
+local function draw_transient_popup()
+  -- enc() triggers popup for 0.8s at center of screen
+  if popup_time > 0 and popup_param then
+    screen.level(12)
+    screen.move(65, 25)
+    screen.text_center(popup_param)
+    screen.level(15)
+    screen.move(65, 35)
+    screen.text_center(string.format(popup_val, popup_val))
+  end
+end
+
+function redraw()
+  screen.clear()
+  
+  -- draw all screen zones
+  draw_status_strip()
+  draw_live_zone()
+  draw_context_bar()
+  draw_midi_activity()
 
   screen.update()
 end
@@ -743,6 +818,9 @@ function enc(n, d)
   if n == 1 then
     -- page select
     page = util.clamp(page + (d > 0 and 1 or -1), 1, 3)
+    popup_param = {"ROUTE", "MODULE", "MACRO"}[page]
+    popup_val = popup_param
+    popup_time = 0.8
 
   elseif page == 2 then
     -- module params
@@ -758,6 +836,9 @@ function enc(n, d)
         step = (p.max - p.min) / 100 * d
       end
       params:set(p.key, util.clamp(val + step, p.min, p.max))
+      popup_param = p.name
+      popup_val = "%.2f"
+      popup_time = 0.8
     end
 
   elseif page == 3 then
@@ -773,6 +854,9 @@ function enc(n, d)
         })
       end
       apply_macro(idx, macros[idx] + d * 0.01)
+      popup_param = MACRO_NAMES[idx]
+      popup_val = "%.0f%%"
+      popup_time = 0.8
     end
   end
 
@@ -943,10 +1027,13 @@ function init()
   -- ── load default template ──
   load_template(1)
 
-  -- ── screen refresh clock ──
+  -- ── screen refresh clock at ~12fps with beat pulse ──
   clock.run(function()
     while true do
-      clock.sleep(1/15)
+      clock.sleep(1/12)
+      beat_phase = (beat_phase + 1/12 / 2) % 1.0  -- pulse cycle ~2 seconds
+      popup_time = math.max(0, popup_time - 1/12)
+      midi_activity_time = math.max(0, midi_activity_time - 1/12)
       if dirty then
         redraw()
         grid_redraw()
