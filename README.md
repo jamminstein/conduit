@@ -1,38 +1,27 @@
 # conduit
 
-A patch-programmable complex oscillator with a grid-based routing matrix and isomorphic keyboard. Features 5 synthesis modules (2 oscillators, fold, filter, mod) with macro controls and templates.
-
-## Install
-
-`;install https://github.com/jamminstein/conduit`
+> Patch-programmable complex oscillator with routing matrix
 
 ## Controls
 
-**Norns:**
-- E1: Navigate pages
-- E2: Context-dependent parameter
-- E3: Context-dependent parameter
-- K2: Context-dependent action
-- K3: Context-dependent action
+- **E1** — navigate pages (routing/module/macros)
+- **E2** — module param 1 / macro adjustment
+- **E3** — module param 2 / macro adjustment
+- **K2** — previous module
+- **K3** — next module
 
-**Grid (16x8):**
-- Left side: Routing matrix for module connections
-- Right side: Isomorphic keyboard for melodic input
+## Grid
 
-## Features
-
-- 5 synthesis modules: OSC1, OSC2, Fold, Filter, Mod
-- Grid-based patch programming
-- Macro control lanes for quick modulation
-- Template system for preset management
-- Isomorphic keyboard layout for intuitive pitch entry
+16×8 monome grid with routing matrix (left 5×5), module selector (row 7), template selector (row 8), and isomorphic keyboard (right 8×8).
 
 ## Requirements
 
 - norns
-- 16x8 grid
-- Engine_Conduit engine (included)
+- grid (16×8 monome)
+- engine: Conduit
 
-## Author
+## Install
 
-@jamminstein
+```
+;install https://github.com/jamminstein/conduit
+```
