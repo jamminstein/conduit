@@ -81,7 +81,7 @@ local dirty = true
 -- screen design system state
 local beat_phase = 0.0      -- 0.0 to 1.0, pulses at beat rate
 local popup_param = nil     -- transient parameter name
-local popup_val = nil       -- transient parameter value
+local popup_val = nil       -- transient parameter value (pre-formatted string)
 local popup_time = 0        -- time remaining for popup display
 local midi_activity_time = 0 -- time remaining for MIDI activity flash
 
@@ -614,46 +614,8 @@ local function draw_status_strip()
   screen.stroke()
 end
 
-local function draw_live_zone()
-  if page == 1 then
-    draw_route_page()
-  elseif page == 2 then
-    draw_module_page()
-  elseif page == 3 then
-    draw_macro_page()
-  end
-end
-
-local function draw_context_bar()
-  -- y 53-58: template name (level 5), MIDI channel (level 4), active note count (level 6)
-  screen.level(2)
-  screen.move(0, 52)
-  screen.line(128, 52)
-  screen.stroke()
-
-  screen.level(5)
-  screen.move(2, 58)
-  screen.text(templates[selected_template].name)
-
-  screen.level(4)
-  screen.move(65, 58)
-  screen.text_center("CH: 1")
-
-  if playing then
-    screen.level(6)
-    screen.move(126, 58)
-    screen.text_right(musicutil.note_num_to_name(current_note, true))
-  end
-end
-
-local function draw_midi_activity()
-  -- small dot near context bar that flashes level 12 when notes pass through
-  if midi_activity_time > 0 then
-    screen.level(12)
-    screen.circle(115, 54, 1)
-    screen.fill()
-  end
-end
+-- Page-draw functions defined BEFORE draw_live_zone so they are in scope
+-- when draw_live_zone is compiled (Lua 5.3 forward-reference rule).
 
 local function draw_route_page()
   -- ROUTE: sources on left (level 5), destinations on top (level 5)
@@ -787,15 +749,59 @@ local function draw_macro_page()
   end
 end
 
+local function draw_live_zone()
+  if page == 1 then
+    draw_route_page()
+  elseif page == 2 then
+    draw_module_page()
+  elseif page == 3 then
+    draw_macro_page()
+  end
+end
+
+local function draw_context_bar()
+  -- y 53-58: template name (level 5), MIDI channel (level 4), active note count (level 6)
+  screen.level(2)
+  screen.move(0, 52)
+  screen.line(128, 52)
+  screen.stroke()
+
+  screen.level(5)
+  screen.move(2, 58)
+  screen.text(templates[selected_template].name)
+
+  screen.level(4)
+  screen.move(65, 58)
+  screen.text_center("CH: 1")
+
+  if playing then
+    screen.level(6)
+    screen.move(126, 58)
+    screen.text_right(musicutil.note_num_to_name(current_note, true))
+  end
+end
+
+local function draw_midi_activity()
+  -- small dot near context bar that flashes level 12 when notes pass through
+  if midi_activity_time > 0 then
+    screen.level(12)
+    screen.circle(115, 54, 1)
+    screen.fill()
+  end
+end
+
 local function draw_transient_popup()
   -- enc() triggers popup for 0.8s at center of screen
+  -- popup_val holds a pre-formatted display string
   if popup_time > 0 and popup_param then
     screen.level(12)
     screen.move(65, 25)
     screen.text_center(popup_param)
-    screen.level(15)
-    screen.move(65, 35)
-    screen.text_center(string.format(popup_val, popup_val))
+    if popup_val then
+      screen.level(15)
+      screen.move(65, 35)
+      screen.text_center(tostring(popup_val))
+    end
   end
 end
 
@@ -807,6 +813,7 @@ function redraw()
   draw_live_zone()
   draw_context_bar()
   draw_midi_activity()
+  draw_transient_popup()
 
   screen.update()
 end
@@ -819,7 +826,7 @@ function enc(n, d)
     -- page select
     page = util.clamp(page + (d > 0 and 1 or -1), 1, 3)
     popup_param = {"ROUTE", "MODULE", "MACRO"}[page]
-    popup_val = popup_param
+    popup_val = nil  -- page name shown in popup_param; no numeric value
     popup_time = 0.8
 
   elseif page == 2 then
@@ -835,9 +842,10 @@ function enc(n, d)
       else
         step = (p.max - p.min) / 100 * d
       end
-      params:set(p.key, util.clamp(val + step, p.min, p.max))
+      local new_val = util.clamp(val + step, p.min, p.max)
+      params:set(p.key, new_val)
       popup_param = p.name
-      popup_val = "%.2f"
+      popup_val = string.format(p.fmt, new_val)  -- pre-format for safe display
       popup_time = 0.8
     end
 
@@ -855,7 +863,7 @@ function enc(n, d)
       end
       apply_macro(idx, macros[idx] + d * 0.01)
       popup_param = MACRO_NAMES[idx]
-      popup_val = "%.0f%%"
+      popup_val = string.format("%.0f%%", macros[idx] * 100)  -- pre-format
       popup_time = 0.8
     end
   end
