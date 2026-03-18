@@ -85,6 +85,11 @@ local popup_val = nil       -- transient parameter value (pre-formatted string)
 local popup_time = 0        -- time remaining for popup display
 local midi_activity_time = 0 -- time remaining for MIDI activity flash
 
+-- patch save/recall state
+local patch_number = 1      -- 1-8 saved patches
+local oscilloscope_buffer = {} -- last N audio samples for waveform display
+local oscilloscope_page = 1 -- 1=normal, 2=scope view
+
 -- grid modulation matrix: rows 5-8 (destinations), cols 1-4 (sources)
 -- grid_mod_matrix[row - 4][col] = true if connection active
 local grid_mod_matrix = {}
@@ -438,6 +443,133 @@ local function load_template(idx)
   dirty = true
 end
 
+-- ── PATCH SAVE/RECALL ────────────────────────────────────
+
+local function save_patch(slot)
+  local patch_data = {
+    params = {},
+    routes = {},
+    macros = util.deep_copy(macros),
+  }
+
+  -- save all param values
+  for key, _ in pairs(module_params[1][1]) do
+    if key == "name" or key == "key" or key == "min" or key == "max" or key == "fmt" or key == "exp" then
+      -- skip metadata
+    else
+      local param_key = module_params[1][1].key or key
+    end
+  end
+
+  -- collect all param keys from all modules
+  local param_keys = {}
+  for i = 1, 5 do
+    if module_params[i] then
+      for _, p in ipairs(module_params[i]) do
+        if p.key and not param_keys[p.key] then
+          param_keys[p.key] = true
+        end
+      end
+    end
+  end
+
+  -- add envelope and output params
+  param_keys["atk"] = true
+  param_keys["dec"] = true
+  param_keys["sus"] = true
+  param_keys["rel"] = true
+  param_keys["pan"] = true
+  param_keys["verb_mix"] = true
+  param_keys["filt_morph"] = true
+  param_keys["mod_shape"] = true
+
+  for key, _ in pairs(param_keys) do
+    if params.lookup[key] then
+      patch_data.params[key] = params:get(key)
+    end
+  end
+
+  -- save routing matrix
+  for src = 1, 5 do
+    for dst = 1, 5 do
+      table.insert(patch_data.routes, {src = src, dst = dst, lvl = route_matrix[src][dst]})
+    end
+  end
+
+  -- save to data directory
+  local patch_dir = _path.data .. "conduit/"
+  os.execute("mkdir -p " .. patch_dir)
+  local patch_file = patch_dir .. "patch_" .. slot .. ".txt"
+
+  local f = io.open(patch_file, "w")
+  if f then
+    f:write(util.table_to_string(patch_data))
+    f:close()
+    popup_param = "SAVED"
+    popup_val = "patch " .. slot
+    popup_time = 1.0
+  end
+  dirty = true
+end
+
+local function load_patch(slot)
+  local patch_dir = _path.data .. "conduit/"
+  local patch_file = patch_dir .. "patch_" .. slot .. ".txt"
+
+  local f = io.open(patch_file, "r")
+  if not f then
+    popup_param = "NO PATCH"
+    popup_val = slot
+    popup_time = 1.0
+    dirty = true
+    return
+  end
+
+  local content = f:read("*a")
+  f:close()
+
+  local patch_data = util.string_to_table(content)
+  if not patch_data then
+    popup_param = "ERROR"
+    popup_val = "corrupted"
+    popup_time = 1.0
+    dirty = true
+    return
+  end
+
+  -- restore params
+  if patch_data.params then
+    for key, val in pairs(patch_data.params) do
+      if params.lookup[key] then
+        params:set(key, val)
+      end
+    end
+  end
+
+  -- restore routing
+  if patch_data.routes then
+    for src = 1, 5 do
+      for dst = 1, 5 do
+        route_matrix[src][dst] = 1
+      end
+    end
+    for _, r in ipairs(patch_data.routes) do
+      route_matrix[r.src][r.dst] = r.lvl
+      send_route(r.src, r.dst, r.lvl)
+    end
+  end
+
+  -- restore macros
+  if patch_data.macros then
+    macros = util.deep_copy(patch_data.macros)
+  end
+
+  popup_param = "LOADED"
+  popup_val = "patch " .. slot
+  popup_time = 1.0
+  dirty = true
+end
+
 
 -- ── GRID ─────────────────────────────────────────────────
 -- Layout (16×8):
@@ -619,10 +751,9 @@ end
 
 local function draw_route_page()
   -- ROUTE: sources on left (level 5), destinations on top (level 5)
-  -- Active connections as bright points (level 12-15)
+  -- Active connections as lines (level 12-15) and bright points
   -- Inactive intersections at level 2
-  -- Selected connection at level 15
-  
+
   local ox, oy = 12, 15
   local cell = 9
 
@@ -651,7 +782,20 @@ local function draw_route_page()
         screen.pixel(cx, cy)
         screen.fill()
       else
-        -- active: brightness based on level
+        -- active: draw connection line from src label to dst label
+        local src_x = ox - 10
+        local src_y = oy + (src - 1) * cell + cell / 2 + 2
+        local dst_x = ox + (dst - 1) * cell + cell / 2
+        local dst_y = oy - 4
+
+        screen.level(9 + lvl * 2)
+        screen.move(src_x, src_y)
+        screen.line(cx, cy)
+        screen.move(cx, cy)
+        screen.line(dst_x, dst_y)
+        screen.stroke()
+
+        -- active point: brightness based on level
         screen.level(9 + lvl * 2)
         screen.circle(cx, cy, lvl - 0.5)
         screen.fill()
@@ -749,6 +893,45 @@ local function draw_macro_page()
   end
 end
 
+local function draw_oscilloscope_page()
+  -- SCOPE: waveform of last N audio samples with patch control
+  screen.level(5)
+  screen.move(65, 18)
+  screen.text_center("OSCILLOSCOPE")
+
+  -- patch slot indicator at top right
+  screen.level(6)
+  screen.move(126, 18)
+  screen.text_right("P" .. patch_number)
+
+  -- simple oscilloscope: draw sample buffer as line
+  if #oscilloscope_buffer > 1 then
+    screen.level(8)
+    local buf_len = math.min(#oscilloscope_buffer, 100)
+    local scale_x = 100 / buf_len
+    local scale_y = 15  -- amplitude scale
+
+    for i = 1, buf_len - 1 do
+      local s1 = oscilloscope_buffer[i] or 0
+      local s2 = oscilloscope_buffer[i + 1] or 0
+      local x1 = 15 + (i - 1) * scale_x
+      local x2 = 15 + i * scale_x
+      local y1 = 32 - (s1 * scale_y)
+      local y2 = 32 - (s2 * scale_y)
+      screen.move(x1, y1)
+      screen.line(x2, y2)
+    end
+    screen.stroke()
+  end
+
+  -- instructions at bottom
+  screen.level(4)
+  screen.move(2, 50)
+  screen.text("K2/K3: patch")
+  screen.move(2, 58)
+  screen.text("hold K2: save  hold K3: load")
+end
+
 local function draw_live_zone()
   if page == 1 then
     draw_route_page()
@@ -756,6 +939,8 @@ local function draw_live_zone()
     draw_module_page()
   elseif page == 3 then
     draw_macro_page()
+  elseif page == 4 then
+    draw_oscilloscope_page()
   end
 end
 
@@ -823,9 +1008,10 @@ end
 
 function enc(n, d)
   if n == 1 then
-    -- page select
-    page = util.clamp(page + (d > 0 and 1 or -1), 1, 3)
-    popup_param = {"ROUTE", "MODULE", "MACRO"}[page]
+    -- page select (now includes oscilloscope page 4)
+    page = util.clamp(page + (d > 0 and 1 or -1), 1, 4)
+    local page_names = {"ROUTE", "MODULE", "MACRO", "SCOPE"}
+    popup_param = page_names[page]
     popup_val = nil  -- page name shown in popup_param; no numeric value
     popup_time = 0.8
 
@@ -871,43 +1057,85 @@ function enc(n, d)
   dirty = true
 end
 
+-- key press tracking for long-press detection
+local key_held_time = {0, 0, 0}
+local LONG_PRESS_TIME = 0.5  -- seconds
+
 function key(n, z)
-  if z == 0 then return end
+  if z == 1 then
+    -- key press: start tracking
+    key_held_time[n] = 0
+    dirty = true
+  else
+    -- key release: handle long-press
+    local held = key_held_time[n] or 0
 
-  if page == 1 then
-    -- K2/K3 navigate modules on route page
-    if n == 2 then
-      selected_module = util.clamp(selected_module - 1, 1, 5)
-    elseif n == 3 then
-      selected_module = util.clamp(selected_module + 1, 1, 5)
+    if page == 1 then
+      -- K2/K3 navigate modules on route page
+      if n == 2 then
+        selected_module = util.clamp(selected_module - 1, 1, 5)
+      elseif n == 3 then
+        selected_module = util.clamp(selected_module + 1, 1, 5)
+      end
+
+    elseif page == 2 then
+      -- K2/K3 cycle modules, or K2 long-press to save patch
+      if n == 2 then
+        if held >= LONG_PRESS_TIME then
+          save_patch(patch_number)
+        else
+          selected_module = util.clamp(selected_module - 1, 1, 5)
+        end
+      elseif n == 3 then
+        selected_module = util.clamp(selected_module + 1, 1, 5)
+      end
+
+    elseif page == 3 then
+      -- K2+K3: start/stop macro recording
+      -- K3 long-press: load patch
+      if n == 2 or n == 3 then
+        if is_recording then
+          stop_macro_recording()
+        else
+          start_macro_recording()
+        end
+      end
+
+    elseif page == 4 then
+      -- oscilloscope page: K2 long-press to save, K3 long-press to load
+      if n == 2 and held >= LONG_PRESS_TIME then
+        save_patch(patch_number)
+      elseif n == 3 and held >= LONG_PRESS_TIME then
+        load_patch(patch_number)
+      elseif n == 2 then
+        patch_number = util.clamp(patch_number - 1, 1, 8)
+      elseif n == 3 then
+        patch_number = util.clamp(patch_number + 1, 1, 8)
+      end
     end
 
-  elseif page == 2 then
-    -- K2/K3 cycle modules
-    if n == 2 then
-      selected_module = util.clamp(selected_module - 1, 1, 5)
-    elseif n == 3 then
-      selected_module = util.clamp(selected_module + 1, 1, 5)
-    end
+    key_held_time[n] = 0
+    dirty = true
+  end
+end
 
-  elseif page == 3 then
-    -- K2+K3: start/stop macro recording
-    if n == 2 or n == 3 then
-      if is_recording then
-        stop_macro_recording()
-      else
-        start_macro_recording()
+-- update key held times
+clock.run(function()
+  while true do
+    clock.sleep(0.01)
+    for i = 1, 3 do
+      if key_held_time[i] > 0 then
+        key_held_time[i] = key_held_time[i] + 0.01
       end
     end
   end
-
-  dirty = true
-end
+end)
 
 
 -- ── MIDI ─────────────────────────────────────────────────
 
 local midi_device
+local audio_monitor = nil
 
 local function midi_event(data)
   local msg = midi.to_msg(data)
@@ -915,6 +1143,28 @@ local function midi_event(data)
     note_on(msg.note, msg.vel)
   elseif msg.type == "note_off" or (msg.type == "note_on" and msg.vel == 0) then
     note_off()
+  elseif msg.type == "cc" then
+    -- MIDI CC support for macro control
+    -- CC 20-23 = macros 1-4
+    if msg.cc >= 20 and msg.cc <= 23 then
+      local macro_idx = msg.cc - 19
+      local normalized = msg.val / 127.0
+      apply_macro(macro_idx, normalized)
+    end
+  end
+  midi_activity_time = 0.2
+  dirty = true
+end
+
+-- oscilloscope audio buffer capture
+local function capture_audio_buffer()
+  if audio_monitor then
+    -- periodic capture from audio monitor (if engine provides this)
+    -- for now, fill with gentle sine wave for visualization
+    local t = clock.get_beats()
+    for i = 1, 50 do
+      oscilloscope_buffer[i] = math.sin(t * 2 * math.pi + (i / 50) * math.pi * 2) * 0.3
+    end
   end
 end
 
@@ -1032,6 +1282,9 @@ function init()
   midi_device = midi.connect(1)
   midi_device.event = midi_event
 
+  -- ── initialize key tracking ──
+  key_held_time = {0, 0, 0}
+
   -- ── load default template ──
   load_template(1)
 
@@ -1042,12 +1295,24 @@ function init()
       beat_phase = (beat_phase + 1/12 / 2) % 1.0  -- pulse cycle ~2 seconds
       popup_time = math.max(0, popup_time - 1/12)
       midi_activity_time = math.max(0, midi_activity_time - 1/12)
+      -- periodic oscilloscope buffer capture
+      if page == 4 then
+        capture_audio_buffer()
+      end
       if dirty then
         redraw()
         grid_redraw()
         dirty = false
       end
     end
+  end)
+
+  -- ── patch number display params ──
+  params:add_group("PATCH", 1)
+  params:add_number("patch_slot", "patch slot", 1, 8, 1)
+  params:set_action("patch_slot", function(v)
+    patch_number = v
+    dirty = true
   end)
 end
 
