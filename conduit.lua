@@ -75,6 +75,15 @@ local scale_notes = {}
 local current_note = nil
 local playing = false
 
+-- ── OP-XY MIDI output ──
+local opxy_out = nil
+local function opxy_note_on(note, vel)
+  if opxy_out then opxy_out:note_on(note, vel, params:get("opxy_channel")) end
+end
+local function opxy_note_off(note)
+  if opxy_out then opxy_out:note_off(note, 0, params:get("opxy_channel")) end
+end
+
 -- screen redraw flag
 local dirty = true
 
@@ -323,6 +332,7 @@ end
 local function note_on(note, vel)
   local freq = musicutil.note_num_to_freq(note)
   engine.note_on(freq, vel or 100)
+  opxy_note_on(note, vel or 100)
   current_note = note
   playing = true
   midi_activity_time = 0.2
@@ -331,6 +341,7 @@ end
 
 local function note_off()
   engine.note_off()
+  if current_note then opxy_note_off(current_note) end
   playing = false
   current_note = nil
   dirty = true
@@ -1309,6 +1320,15 @@ function init()
   midi_device = midi.connect(1)
   midi_device.event = midi_event
 
+  -- ── OP-XY ──
+  params:add_separator("OP-XY")
+  params:add_number("opxy_device","OP-XY MIDI Device",1,4,2)
+  params:set_action("opxy_device",function(v)
+    opxy_out=midi.connect(v)
+  end)
+  params:add_number("opxy_channel","OP-XY MIDI Channel",1,16,1)
+  opxy_out=midi.connect(params:get("opxy_device"))
+
   -- ── initialize key tracking ──
   key_held_time = {0, 0, 0}
 
@@ -1351,4 +1371,5 @@ function cleanup()
       midi_device:cc(120, 0, ch)
     end
   end
+  if opxy_out then opxy_out:cc(123, 0, params:get("opxy_channel")) end
 end
