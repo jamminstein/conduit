@@ -19,7 +19,7 @@ engine.name = "Conduit"
 
 local musicutil = require "musicutil"
 
--- ── CONSTANTS ────────────────────────────────────────────
+-- ── CONSTANTS ──────────────────────────────────────────────
 
 local MODULE_NAMES = {"OSC A", "OSC B", "FOLD", "FILT", "MOD"}
 local MODULE_SHORT = {"oA", "oB", "fd", "fl", "md"}
@@ -39,7 +39,7 @@ local B = {
   FULL   = 15,
 }
 
--- ── STATE ────────────────────────────────────────────────
+-- ── STATE ──────────────────────────────────────────────
 
 local g = grid.connect()
 
@@ -52,7 +52,7 @@ local route_matrix = {}
 for src = 1, 5 do
   route_matrix[src] = {}
   for dst = 1, 5 do
-    route_matrix[src][dst] = 1  -- level 1 = off
+    route_matrix[src][dst] = 1  -- level 1 = off, all initialized to 0
   end
 end
 
@@ -103,7 +103,7 @@ end
 local MOD_SOURCES = {"LFO1", "LFO2", "ENV", "Random"}  -- cols 1-4
 local MOD_DESTS = {"OSC A freq", "OSC B freq", "Filter cutoff", "Fold amount"}  -- rows 5-8
 
--- ── TEMPLATES ────────────────────────────────────────────
+-- ── TEMPLATES ──────────────────────────────────────────────
 -- each template is a curated starting point that sounds
 -- immediately incredible. no bad sounds possible.
 
@@ -248,7 +248,7 @@ local templates = {
 
 local selected_template = 1
 
--- ── MODULE PARAM DEFINITIONS ─────────────────────────────
+-- ── MODULE PARAM DEFINITIONS ─────────────────────────────────────
 -- each module has two encoder-accessible params
 
 local module_params = {
@@ -283,6 +283,7 @@ local module_params = {
 -- ── HELPERS ──────────────────────────────────────────────
 
 local function send_route(src, dst, level_idx)
+  if not route_matrix[src] then return end
   local idx = (src - 1) * 5 + (dst - 1)
   local amt = ROUTE_LEVELS[level_idx]
   engine.route(idx, amt)
@@ -335,7 +336,7 @@ local function note_off()
   dirty = true
 end
 
--- ── MACROS ───────────────────────────────────────────────
+-- ── MACROS ──────────────────────────────────────────────
 -- each macro smoothly controls multiple params at once.
 -- one knob turn reshapes the entire sound.
 
@@ -345,42 +346,46 @@ local function apply_macro(idx, val)
   if idx == 1 then
     -- TEXTURE: harmonic complexity
     -- sine/clean → rich/folded
-    params:set("osc_a_morph", val * 0.8)
-    params:set("fold_amt", 0.3 + val * 6.0)
-    params:set("osc_b_level", val * 0.8)
+    params:set("osc_a_morph", util.clamp(val * 0.8, 0, 0.99))
+    params:set("fold_amt", util.clamp(0.3 + val * 6.0, 0.3, 8.0))
+    params:set("osc_b_level", util.clamp(val * 0.8, 0, 1.0))
 
   elseif idx == 2 then
     -- MOTION: modulation intensity
     -- static → heavily modulated
-    params:set("mod_depth", val * 0.8)
+    params:set("mod_depth", util.clamp(val * 0.8, 0, 1.0))
     -- also push mod→filt and mod→fold routes
-    local filt_lvl = val < 0.25 and 1 or (val < 0.5 and 2 or (val < 0.75 and 3 or 4))
-    local fold_lvl = val < 0.5 and 1 or (val < 0.75 and 2 or 3)
-    route_matrix[5][4] = filt_lvl
-    route_matrix[5][3] = fold_lvl
-    send_route(5, 4, filt_lvl)
-    send_route(5, 3, fold_lvl)
+    local filt_lvl = util.clamp(val < 0.25 and 1 or (val < 0.5 and 2 or (val < 0.75 and 3 or 4)), 1, 4)
+    local fold_lvl = util.clamp(val < 0.5 and 1 or (val < 0.75 and 2 or 3), 1, 4)
+    if route_matrix[5] then
+      route_matrix[5][4] = filt_lvl
+      route_matrix[5][3] = fold_lvl
+      send_route(5, 4, filt_lvl)
+      send_route(5, 3, fold_lvl)
+    end
 
   elseif idx == 3 then
     -- SPACE: wet/ambient
     -- dry/tight → washed/expansive
-    params:set("verb_mix", val * 0.5)
-    params:set("rel", 0.1 + val * 4.0)
-    params:set("res", val * 0.6)
+    params:set("verb_mix", util.clamp(val * 0.5, 0, 1.0))
+    params:set("rel", util.clamp(0.1 + val * 4.0, 0.01, 8.0))
+    params:set("res", util.clamp(val * 0.6, 0, 0.95))
 
   elseif idx == 4 then
     -- DENSITY: harmonic density
     -- fundamental → complex partial cloud
-    params:set("osc_b_ratio", 1.0 + val * 10.0)
+    params:set("osc_b_ratio", util.clamp(1.0 + val * 10.0, 0.5, 12.0))
     -- push oscB→oscA cross-mod
-    local cross_lvl = val < 0.3 and 1 or (val < 0.6 and 2 or (val < 0.85 and 3 or 4))
-    route_matrix[2][1] = cross_lvl
-    send_route(2, 1, cross_lvl)
+    local cross_lvl = util.clamp(val < 0.3 and 1 or (val < 0.6 and 2 or (val < 0.85 and 3 or 4)), 1, 4)
+    if route_matrix[2] then
+      route_matrix[2][1] = cross_lvl
+      send_route(2, 1, cross_lvl)
+    end
   end
   dirty = true
 end
 
--- ── MACRO RECORDING ──────────────────────────────────────
+-- ── MACRO RECORDING ─────────────────────────────────────────
 
 local function start_macro_recording()
   is_recording = true
@@ -405,7 +410,7 @@ local function playback_macro_recording()
   end)
 end
 
--- ── TEMPLATE LOADING ─────────────────────────────────────
+-- ── TEMPLATE LOADING ──────────────────────────────────────────────
 
 local function load_template(idx)
   local t = templates[idx]
@@ -415,9 +420,11 @@ local function load_template(idx)
 
   -- clear routing
   for src = 1, 5 do
-    for dst = 1, 5 do
-      route_matrix[src][dst] = 1
-      send_route(src, dst, 1)
+    if route_matrix[src] then
+      for dst = 1, 5 do
+        route_matrix[src][dst] = 1
+        send_route(src, dst, 1)
+      end
     end
   end
 
@@ -432,8 +439,10 @@ local function load_template(idx)
   if t.routes then
     for _, r in ipairs(t.routes) do
       local src, dst, lvl = r[1], r[2], r[3]
-      route_matrix[src][dst] = lvl
-      send_route(src, dst, lvl)
+      if route_matrix[src] then
+        route_matrix[src][dst] = lvl
+        send_route(src, dst, lvl)
+      end
     end
   end
 
@@ -443,7 +452,7 @@ local function load_template(idx)
   dirty = true
 end
 
--- ── PATCH SAVE/RECALL ────────────────────────────────────
+-- ── PATCH SAVE/RECALL ──────────────────────────────────────────────
 
 local function save_patch(slot)
   local patch_data = {
@@ -491,8 +500,10 @@ local function save_patch(slot)
 
   -- save routing matrix
   for src = 1, 5 do
-    for dst = 1, 5 do
-      table.insert(patch_data.routes, {src = src, dst = dst, lvl = route_matrix[src][dst]})
+    if route_matrix[src] then
+      for dst = 1, 5 do
+        table.insert(patch_data.routes, {src = src, dst = dst, lvl = route_matrix[src][dst]})
+      end
     end
   end
 
@@ -549,13 +560,17 @@ local function load_patch(slot)
   -- restore routing
   if patch_data.routes then
     for src = 1, 5 do
-      for dst = 1, 5 do
-        route_matrix[src][dst] = 1
+      if route_matrix[src] then
+        for dst = 1, 5 do
+          route_matrix[src][dst] = 1
+        end
       end
     end
     for _, r in ipairs(patch_data.routes) do
-      route_matrix[r.src][r.dst] = r.lvl
-      send_route(r.src, r.dst, r.lvl)
+      if route_matrix[r.src] then
+        route_matrix[r.src][r.dst] = r.lvl
+        send_route(r.src, r.dst, r.lvl)
+      end
     end
   end
 
@@ -571,7 +586,7 @@ local function load_patch(slot)
 end
 
 
--- ── GRID ─────────────────────────────────────────────────
+-- ── GRID ──────────────────────────────────────────────
 -- Layout (16×8):
 --   cols 1-5, rows 1-5:  routing matrix
 --   cols 1-4, rows 5-8:  modulation matrix
@@ -584,9 +599,11 @@ local function grid_redraw()
 
   -- ── Routing matrix (cols 1-5, rows 1-5) ──
   for src = 1, 5 do
-    for dst = 1, 5 do
-      local lvl = route_matrix[src][dst]
-      g:led(dst, src, ROUTE_BRIGHT[lvl])
+    if route_matrix[src] then
+      for dst = 1, 5 do
+        local lvl = route_matrix[src][dst] or 1
+        g:led(dst, src, ROUTE_BRIGHT[lvl])
+      end
     end
   end
 
@@ -601,7 +618,7 @@ local function grid_redraw()
   for col = 1, 4 do
     for row = 5, 8 do
       local dest_idx = row - 4
-      local is_active = grid_mod_matrix[dest_idx][col]
+      local is_active = grid_mod_matrix[dest_idx] and grid_mod_matrix[dest_idx][col]
       g:led(col, row, is_active and B.BRIGHT or B.DIM)
     end
   end
@@ -647,7 +664,9 @@ g.key = function(x, y, z)
     if z == 1 then
       local col = x
       local dest_idx = y - 4
-      grid_mod_matrix[dest_idx][col] = not grid_mod_matrix[dest_idx][col]
+      if grid_mod_matrix[dest_idx] then
+        grid_mod_matrix[dest_idx][col] = not grid_mod_matrix[dest_idx][col]
+      end
       dirty = true
     end
 
@@ -655,10 +674,12 @@ g.key = function(x, y, z)
   elseif x >= 1 and x <= 5 and y >= 1 and y <= 5 then
     if z == 1 then
       local src, dst = y, x
-      local lvl = route_matrix[src][dst]
-      lvl = (lvl % 4) + 1  -- cycle: 1→2→3→4→1
-      route_matrix[src][dst] = lvl
-      send_route(src, dst, lvl)
+      if route_matrix[src] then
+        local lvl = route_matrix[src][dst] or 1
+        lvl = (lvl % 4) + 1  -- cycle: 1→2→3→4→1
+        route_matrix[src][dst] = lvl
+        send_route(src, dst, lvl)
+      end
       dirty = true
     end
 
@@ -703,7 +724,7 @@ g.key = function(x, y, z)
 end
 
 
--- ── SCREEN ───────────────────────────────────────────────
+-- ── SCREEN ──────────────────────────────────────────────
 
 local function pulse_brightness()
   -- beat_phase 0.0-1.0, returns brightness 3-15
@@ -771,34 +792,36 @@ local function draw_route_page()
     screen.move(ox - 4, oy + (src - 1) * cell + cell / 2 + 2)
     screen.text_right(MODULE_SHORT[src])
 
-    for dst = 1, 5 do
-      local lvl = route_matrix[src][dst]
-      local cx = ox + (dst - 1) * cell + cell / 2
-      local cy = oy + (src - 1) * cell + cell / 2
+    if route_matrix[src] then
+      for dst = 1, 5 do
+        local lvl = route_matrix[src][dst] or 1
+        local cx = ox + (dst - 1) * cell + cell / 2
+        local cy = oy + (src - 1) * cell + cell / 2
 
-      if lvl == 1 then
-        -- inactive at level 2
-        screen.level(2)
-        screen.pixel(cx, cy)
-        screen.fill()
-      else
-        -- active: draw connection line from src label to dst label
-        local src_x = ox - 10
-        local src_y = oy + (src - 1) * cell + cell / 2 + 2
-        local dst_x = ox + (dst - 1) * cell + cell / 2
-        local dst_y = oy - 4
+        if lvl == 1 then
+          -- inactive at level 2
+          screen.level(2)
+          screen.pixel(cx, cy)
+          screen.fill()
+        else
+          -- active: draw connection line from src label to dst label
+          local src_x = ox - 10
+          local src_y = oy + (src - 1) * cell + cell / 2 + 2
+          local dst_x = ox + (dst - 1) * cell + cell / 2
+          local dst_y = oy - 4
 
-        screen.level(9 + lvl * 2)
-        screen.move(src_x, src_y)
-        screen.line(cx, cy)
-        screen.move(cx, cy)
-        screen.line(dst_x, dst_y)
-        screen.stroke()
+          screen.level(9 + lvl * 2)
+          screen.move(src_x, src_y)
+          screen.line(cx, cy)
+          screen.move(cx, cy)
+          screen.line(dst_x, dst_y)
+          screen.stroke()
 
-        -- active point: brightness based on level
-        screen.level(9 + lvl * 2)
-        screen.circle(cx, cy, lvl - 0.5)
-        screen.fill()
+          -- active point: brightness based on level
+          screen.level(9 + lvl * 2)
+          screen.circle(cx, cy, lvl - 0.5)
+          screen.fill()
+        end
       end
     end
   end
@@ -807,6 +830,7 @@ end
 local function draw_module_page()
   -- MODULE: parameter bars. Selected param at level 15, others at level 8. Labels at level 5.
   local mp = module_params[selected_module]
+  if not mp then return end
 
   -- module name header
   screen.level(12)
@@ -815,6 +839,7 @@ local function draw_module_page()
 
   for i = 1, 2 do
     local p = mp[i]
+    if not p then break end
     local val = params:get(p.key)
     local y_pos = 28 + (i - 1) * 16
 
@@ -1004,7 +1029,7 @@ function redraw()
 end
 
 
--- ── ENCODERS & KEYS ──────────────────────────────────────
+-- ── ENCODERS & KEYS ──────────────────────────────────────────────
 
 function enc(n, d)
   if n == 1 then
@@ -1018,6 +1043,7 @@ function enc(n, d)
   elseif page == 2 then
     -- module params
     local mp = module_params[selected_module]
+    if not mp then return end
     local p_idx = n - 1  -- E2 → param 1, E3 → param 2
     local p = mp[p_idx]
     if p then
@@ -1132,7 +1158,7 @@ clock.run(function()
 end)
 
 
--- ── MIDI ─────────────────────────────────────────────────
+-- ── MIDI ──────────────────────────────────────────────
 
 local midi_device
 local audio_monitor = nil
@@ -1169,7 +1195,7 @@ local function capture_audio_buffer()
 end
 
 
--- ── INIT ─────────────────────────────────────────────────
+-- ── INIT ──────────────────────────────────────────────
 
 function init()
 
@@ -1318,10 +1344,10 @@ end
 
 function cleanup()
   clock.cancel_all()
-  if m then
+  if midi_device then
     for ch = 1, 16 do
-      m:cc(123, 0, ch)
-      m:cc(120, 0, ch)
+      midi_device:cc(123, 0, ch)
+      midi_device:cc(120, 0, ch)
     end
   end
 end
