@@ -595,6 +595,7 @@ end
 --   cols 9-16, rows 1-8: isomorphic keyboard
 
 local function grid_redraw()
+  if not g.device then return end
   g:all(0)
 
   -- ── Routing matrix (cols 1-5, rows 1-5) ──
