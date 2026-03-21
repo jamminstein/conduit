@@ -86,6 +86,7 @@ end
 
 -- screen redraw flag
 local dirty = true
+local screen_clock_id = nil
 
 -- screen design system state
 local beat_phase = 0.0      -- 0.0 to 1.0, pulses at beat rate
@@ -1158,7 +1159,7 @@ function key(n, z)
 end
 
 -- update key held times
-clock.run(function()
+local key_held_clock_id = clock.run(function()
   while true do
     clock.sleep(0.01)
     for i = 1, 3 do
@@ -1336,7 +1337,7 @@ function init()
   load_template(1)
 
   -- ── screen refresh clock at ~12fps with beat pulse ──
-  clock.run(function()
+  screen_clock_id = clock.run(function()
     while true do
       clock.sleep(1/12)
       beat_phase = (beat_phase + 1/12 / 2) % 1.0  -- pulse cycle ~2 seconds
@@ -1364,12 +1365,13 @@ function init()
 end
 
 function cleanup()
-  clock.cancel_all()
+  if screen_clock_id then clock.cancel(screen_clock_id) end
+  if key_held_clock_id then clock.cancel(key_held_clock_id) end
   if midi_device then
     for ch = 1, 16 do
       midi_device:cc(123, 0, ch)
       midi_device:cc(120, 0, ch)
     end
   end
-  if opxy_out then opxy_out:cc(123, 0, params:get("opxy_channel")) end
+  if opxy_out then for ch=1,16 do opxy_out:cc(123,0,ch) end end
 end
